@@ -172,8 +172,12 @@ test('authenticated people can chat and DM in real time', { timeout: 30000 }, as
     });
   }
   const aliceSocket = await connect(alice);
+  const bobPresence = waitForEvent(aliceSocket, 'presence:update');
   const bobSocket = await connect(bob);
+  assert.ok((await bobPresence).includes(bob.id));
+  const charliePresence = waitForEvent(aliceSocket, 'presence:update');
   const charlieSocket = await connect(charlie);
+  assert.ok((await charliePresence).includes(charlie.id));
   await Promise.all([emitAck(aliceSocket, 'room:join', 'general'), emitAck(bobSocket, 'room:join', 'general'), emitAck(charlieSocket, 'room:join', 'general')]);
 
   const roomDelivery = waitForEvent(bobSocket, 'room:message');
@@ -251,6 +255,9 @@ test('authenticated people can chat and DM in real time', { timeout: 30000 }, as
   assert.equal(messages[1].replyTo, messages[0].id);
   const linkHistory = await fetch(`${url}/api/messages?room=links`, { headers: { Cookie: alice.cookie } });
   assert.equal((await linkHistory.json()).messages[0].text, 'A useful page: https://example.test/guide');
+  const bobOffline = waitForEvent(aliceSocket, 'presence:update');
+  bobSocket.disconnect();
+  assert.ok(!(await bobOffline).includes(bob.id));
 });
 
 test('image uploads fail closed without a moderation service', { timeout: 15000 }, async (t) => {

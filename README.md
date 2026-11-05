@@ -11,7 +11,7 @@ npm start
 
 Open [http://localhost:4173](http://localhost:4173). The app creates `data/chatroom.json` for accounts, messages, rooms, and profile settings; avatar and chat images are stored in `data/avatars/` and `data/attachments/`. Passwords are stored as salted scrypt hashes. `Joshua Boudreau` is the default Owner; set `CHATROOM_OWNER_EMAIL` to designate a different account. Owner assignment is not based on signup order.
 
-Run the isolated two-user messaging test with `npm test`.
+Run the integration test suite with `npm test`.
 
 ## School deployment
 ```sh

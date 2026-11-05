@@ -270,6 +270,25 @@ function renderMessages() {
   refreshIcons();
 }
 
+function mergeMessages(history, liveMessages) {
+  const messagesById = new Map(history.map((message) => [message.id, message]));
+  for (const message of liveMessages) {
+    if (!messagesById.has(message.id)) messagesById.set(message.id, message);
+  }
+  return [...messagesById.values()].sort((first, second) => Date.parse(first.createdAt) - Date.parse(second.createdAt));
+}
+
+function joinSocketRoom(eventName, roomId) {
+  if (!socket?.connected) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    socket.timeout(5000).emit(eventName, roomId, (error, result) => {
+      if (error) return reject(new Error('Live connection failed while opening this conversation.'));
+      if (result?.error) return reject(new Error(result.error));
+      resolve();
+    });
+  });
+}
+
 function renderOnline() {
   const onlineUsers = onlineIds.map(profileById).filter(Boolean);
   $('#onlineCount').textContent = onlineUsers.length;
@@ -334,10 +353,10 @@ async function openRoom(roomId) {
   $('#sidebar').classList.remove('open');
   $('#messages').innerHTML = '<p class="empty-state">Loading conversation…</p>';
   try {
+    await joinSocketRoom('room:join', roomId);
     const result = await api(`/api/messages?room=${encodeURIComponent(roomId)}`);
     if (activeContext.type !== 'room' || activeContext.id !== roomId) return;
-    messageCache.set(contextKey(), result.messages);
-    if (socket?.connected) socket.emit('room:join', roomId, (reply) => { if (reply?.error) showToast(reply.error); });
+    messageCache.set(contextKey(), mergeMessages(result.messages, messageCache.get(contextKey()) || []));
     renderMessages();
   } catch (error) { showToast(error.message); }
 }
@@ -356,10 +375,10 @@ async function openDirect(peer) {
   $('#sidebar').classList.remove('open');
   $('#messages').innerHTML = '<p class="empty-state">Loading conversation…</p>';
   try {
+    await joinSocketRoom('dm:join', peer.id);
     const result = await api(`/api/dms/${encodeURIComponent(peer.id)}`);
     if (activeContext.type !== 'dm' || activeContext.id !== peer.id) return;
-    messageCache.set(contextKey(), result.messages);
-    if (socket?.connected) socket.emit('dm:join', peer.id, (reply) => { if (reply?.error) showToast(reply.error); });
+    messageCache.set(contextKey(), mergeMessages(result.messages, messageCache.get(contextKey()) || []));
     renderMessages();
   } catch (error) { showToast(error.message); }
 }
