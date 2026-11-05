@@ -1,0 +1,1051 @@
+const $ = (selector) => document.querySelector(selector);
+const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+const initials = (name) => String(name || '?').trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+const avatarColors = ['av-green', 'av-blue', 'av-purple', 'av-coral', 'av-yellow'];
+const emojiOptions = ['👍', '❤️', '😂', '🎉', '👀', '✨'];
+const fontAwesomeIcons = {
+  'messages-square': 'fa-comments', 'arrow-right': 'fa-arrow-right', 'lock-keyhole': 'fa-lock', 'shield-check': 'fa-shield-halved', 'arrow-left': 'fa-arrow-left',
+  'panel-left-close': 'fa-angles-left', 'panel-left-open': 'fa-bars', 'chevrons-up-down': 'fa-up-down', plus: 'fa-plus', search: 'fa-magnifying-glass', ellipsis: 'fa-ellipsis',
+  smile: 'fa-face-smile', 'arrow-up': 'fa-arrow-up', x: 'fa-xmark', 'message-circle': 'fa-message', pencil: 'fa-pen', sparkles: 'fa-wand-magic-sparkles', 'image-up': 'fa-image',
+  reply: 'fa-reply', 'smile-plus': 'fa-face-smile', 'user-round': 'fa-user', 'log-out': 'fa-right-from-bracket'
+};
+const iconFallbacks = {
+  'messages-square': '▰', 'arrow-right': '→', 'lock-keyhole': '▣', 'shield-check': '✓', 'arrow-left': '←',
+  'panel-left-close': '−', 'panel-left-open': '☰', 'chevrons-up-down': '↕', plus: '+', search: '⌕', ellipsis: '···',
+  smile: '☺', 'arrow-up': '↑', x: '×', 'message-circle': '◌', pencil: '✎', sparkles: '✦', 'image-up': '▧',
+  reply: '↩', 'smile-plus': '☺+', 'user-round': '●', 'log-out': '↪'
+};
+const badgeLabels = {
+  none: 'No badge', jolly: 'Jolly', merry: 'Merry', 'ho-ho-ho': 'Ho Ho Ho', frosty: 'Frosty', cozy: 'Cozy', 'snowed-in': 'Snowed In', naughty: 'Naughty', nice: 'Nice', elf: 'Elf',
+  artist: 'Artist', creator: 'Creator', gamer: 'Gamer', music: 'Music Lover', bookworm: 'Bookworm', 'night-owl': 'Night Owl', helper: 'Helper', trailblazer: 'Trailblazer', dreamer: 'Dreamer', explorer: 'Explorer', legend: 'Legend', stargazer: 'Stargazer', 'good-vibes': 'Good Vibes', 'plant-parent': 'Plant Parent', 'pixel-pro': 'Pixel Pro', 'cozy-core': 'Cozy Core', comet: 'Comet', moonbeam: 'Moonbeam', sunshine: 'Sunshine', vivid: 'Vivid', 'tiny-chaos': 'Tiny Chaos', 'team-player': 'Team Player', maker: 'Maker', storyteller: 'Storyteller', 'early-bird': 'Early Bird',
+  dragon: 'Dragon', angel: 'Angel', raver: 'Raver', builder: 'Builder', rocket: 'Rocket', spectral: 'Spectral', spark: 'Spark', flower: 'Flower', wizard: 'Wizard', 'sun-chaser': 'Sun Chaser',
+};
+const effectLabels = {
+  none: 'None', glow: 'Glow', aurora: 'Aurora', frost: 'Frost', sparkle: 'Sparkle', sunset: 'Sunset', neon: 'Neon', rose: 'Rose', ocean: 'Ocean', ember: 'Ember', cosmic: 'Cosmic', hologram: 'Hologram', midnight: 'Midnight', gold: 'Gold', prism: 'Prism', pulse: 'Pulse', orbit: 'Orbit', electric: 'Electric', glitch: 'Glitch', halo: 'Halo', rainbow: 'Rainbow'
+};
+let currentUser = null;
+let socket = null;
+let rooms = [];
+let users = [];
+let onlineIds = [];
+let activeContext = { type: 'room', id: 'general' };
+let messageCache = new Map();
+let replyTarget = null;
+let searchQuery = '';
+let loginMode = false;
+let profileUser = null;
+let toastTimer;
+let selectedAvatarFile = null;
+let avatarPreviewUrl = null;
+let selectedAvatarEffect = 'none';
+let selectedBadge = 'none';
+let pendingExternalUrl = null;
+let muteTimerInterval;
+let voiceRoomId = null;
+let voiceRingRoomId = null;
+let localVoiceStream = null;
+let voiceIceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+let selectedChatImage = null;
+let mentionQueryStart = null;
+let mentionedRoomId = null;
+const voiceConnections = new Map();
+const voiceUsers = new Map();
+
+function colorForUser(userId) {
+  let hash = 0;
+  for (const character of String(userId)) hash = (hash * 31 + character.charCodeAt(0)) | 0;
+  return avatarColors[Math.abs(hash) % avatarColors.length];
+}
+
+async function api(url, options = {}) {
+  const response = await fetch(url, {
+    credentials: 'same-origin',
+    ...options,
+    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers }
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Something went wrong.');
+  return result;
+}
+
+function refreshIcons() {
+  document.querySelectorAll('i[data-lucide]').forEach((icon) => {
+    const iconName = icon.dataset.lucide;
+    const fontAwesomeStyles = $('#fontAwesomeStyles');
+    icon.textContent = '';
+    icon.classList.remove('icon-fallback');
+    if (fontAwesomeStyles?.sheet && fontAwesomeIcons[iconName]) {
+      icon.classList.add('fa-solid', fontAwesomeIcons[iconName]);
+    } else {
+      icon.classList.remove('fa-solid', ...Object.values(fontAwesomeIcons));
+      icon.classList.add('icon-fallback');
+      icon.textContent = iconFallbacks[iconName] || '•';
+    }
+  });
+}
+
+function linkifyText(text) {
+  const pattern = /https?:\/\/[^\s<]+|www\.[^\s<]+|(?<![@\w.-])(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<]*)?/gi;
+  let output = '';
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    let rawUrl = match[0];
+    let trailing = '';
+    while (/[.,!?;:)\]]$/.test(rawUrl)) {
+      trailing = rawUrl.slice(-1) + trailing;
+      rawUrl = rawUrl.slice(0, -1);
+    }
+    let destination;
+    try {
+      destination = new URL(/^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`);
+      if (!['http:', 'https:'].includes(destination.protocol)) continue;
+    } catch { continue; }
+    output += `${escapeHTML(text.slice(cursor, match.index))}<a href="${escapeHTML(destination.href)}" data-external-url="${escapeHTML(destination.href)}">${escapeHTML(rawUrl)}</a>${escapeHTML(trailing)}`;
+    cursor = match.index + match[0].length;
+  }
+  return output + escapeHTML(text.slice(cursor));
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightMentions(text) {
+  const html = linkifyText(text);
+  const mentionableUsers = [currentUser, ...users].filter(Boolean).sort((first, second) => second.name.length - first.name.length);
+  if (!mentionableUsers.length) return html;
+  const names = mentionableUsers.map((user) => escapeRegExp(escapeHTML(user.name))).join('|');
+  const pattern = new RegExp(`(^|[^\\p{L}\\p{N}_])(@(?:${names}))(?=$|[^\\p{L}\\p{N}_])`, 'giu');
+  return html.replace(/(<[^>]*>|[^<]+)/g, (segment) => {
+    if (segment.startsWith('<')) return segment;
+    return segment.replace(pattern, '$1<span class="mention">$2</span>');
+  });
+}
+
+function showToast(message) {
+  const toast = $('#toast');
+  toast.textContent = message;
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.hidden = true; }, 2800);
+}
+
+function showAuth(screen) {
+  $('#authShell').hidden = false;
+  $('#appShell').hidden = true;
+  $('#welcomeScreen').hidden = screen !== 'welcome';
+  $('#createScreen').hidden = screen !== 'create';
+  refreshIcons();
+}
+
+function setAuthMode(isLogin) {
+  loginMode = isLogin;
+  $('#formTitle').textContent = isLogin ? 'Welcome back.' : 'Create your account.';
+  $('#formCopy').textContent = isLogin ? 'Sign in and pick up the conversation.' : 'Create your account and join the conversation.';
+  $('#bioField').hidden = isLogin;
+  $('#bioInput').required = false;
+  $('#nameField').hidden = isLogin;
+  $('#nameInput').required = !isLogin;
+  $('#passwordInput').autocomplete = isLogin ? 'current-password' : 'new-password';
+  $('#emailInput').type = isLogin ? 'text' : 'email';
+  $('#emailInput').name = isLogin ? 'identity' : 'email';
+  $('#emailInput').placeholder = isLogin ? 'Username or email' : 'you@example.com';
+  $('#submitAccount').innerHTML = isLogin ? 'Sign in <i data-lucide="arrow-right"></i>' : 'Create account <i data-lucide="arrow-right"></i>';
+  $('#formSwitch').innerHTML = isLogin
+    ? 'New to Chatroom? <button id="formLogin" class="text-button" type="button">Create an account</button>'
+    : 'Already have an account? <button id="formLogin" class="text-button" type="button">Sign in</button>';
+  $('#formLogin').addEventListener('click', () => setAuthMode(!loginMode));
+  $('#formError').textContent = '';
+  refreshIcons();
+}
+
+function profileById(userId) {
+  return userId === currentUser.id ? currentUser : users.find((user) => user.id === userId);
+}
+
+function renderPeople() {
+  const host = $('#peopleList');
+  if (!users.length) {
+    host.innerHTML = '<li class="empty-person">No other members yet.</li>';
+    return;
+  }
+  host.innerHTML = users.map((user) => `<li><button class="person-button${activeContext.type === 'dm' && activeContext.id === user.id ? ' active' : ''}" data-person="${escapeHTML(user.id)}">${avatarMarkup(user)}<span class="person-name">${escapeHTML(user.name)}${badgeMarkup(user)}</span>${onlineIds.includes(user.id) ? '<span class="online-indicator" aria-label="Online"></span>' : ''}</button></li>`).join('');
+}
+
+function renderSidebar() {
+  const textRooms = rooms.filter((room) => room.type !== 'voice');
+  const voiceRooms = rooms.filter((room) => room.type === 'voice');
+  $('#channelList').innerHTML = textRooms.map((room) => `<li><button class="channel-button${activeContext.type === 'room' && activeContext.id === room.id ? ' active' : ''}" data-channel="${escapeHTML(room.id)}"><span class="channel-hash">#</span><span class="channel-name">${escapeHTML(room.name)}</span></button></li>`).join('');
+  $('#voiceList').innerHTML = voiceRooms.map((room) => `<li><button class="channel-button${activeContext.type === 'voice' && activeContext.id === room.id ? ' active' : ''}" data-voice-room="${escapeHTML(room.id)}"><span class="channel-hash"><i class="fa-solid fa-volume-high"></i></span><span class="channel-name">${escapeHTML(room.name)}</span></button></li>`).join('');
+  renderPeople();
+  document.querySelectorAll('[data-channel]').forEach((button) => button.addEventListener('click', () => openRoom(button.dataset.channel)));
+  document.querySelectorAll('[data-voice-room]').forEach((button) => button.addEventListener('click', () => openVoiceRoom(button.dataset.voiceRoom)));
+  document.querySelectorAll('[data-person]').forEach((button) => button.addEventListener('click', () => {
+    const user = profileById(button.dataset.person);
+    if (user) openProfile(user);
+  }));
+  refreshIcons();
+}
+
+function updateMentionSuggestions() {
+  const input = $('#messageInput');
+  const cursor = input.selectionStart;
+  const prefix = input.value.slice(0, cursor);
+  const match = prefix.match(/(?:^|\s)@([^\s@]*)$/);
+  const suggestions = $('#mentionSuggestions');
+  if (!match) {
+    mentionQueryStart = null;
+    suggestions.hidden = true;
+    return;
+  }
+  const query = match[1].toLowerCase();
+  mentionQueryStart = cursor - query.length - 1;
+  const candidates = users.filter((user) => user.name.toLowerCase().includes(query)).slice(0, 8);
+  if (!candidates.length) {
+    suggestions.hidden = true;
+    return;
+  }
+  suggestions.innerHTML = candidates.map((user) => `<button class="mention-option" type="button" role="option" data-mention-user="${escapeHTML(user.id)}">${avatarMarkup(user)}<span class="mention-option-name">${escapeHTML(user.name)}${badgeMarkup(user)}</span><span class="mention-option-hint">@mention</span></button>`).join('');
+  suggestions.hidden = false;
+}
+
+function contextKey(context = activeContext) {
+  return `${context.type}:${context.id}`;
+}
+
+function messagesFor(context = activeContext) {
+  return messageCache.get(contextKey(context)) || [];
+}
+
+function avatarMarkup(user, extraClass = '') {
+  const photo = user.avatar ? `<img src="${escapeHTML(user.avatar)}" alt="">` : `<span class="avatar-initials">${escapeHTML(initials(user.name))}</span>`;
+  return `<span class="person-avatar avatar-shell ${colorForUser(user.id)} ${extraClass}" data-effect="${escapeHTML(user.avatarEffect || 'none')}">${photo}</span>`;
+}
+
+function badgeMarkup(user) {
+  if (user.role === 'owner') return '<span class="profile-badge role-owner">Owner</span>';
+  if (user.role === 'moderator') return '<span class="profile-badge role-moderator">Mod</span>';
+  const badge = user.badge || 'none';
+  return badge === 'none' || !badgeLabels[badge] ? '' : `<span class="profile-badge badge-${escapeHTML(badge)}">${escapeHTML(badgeLabels[badge])}</span>`;
+}
+
+function renderOwnAvatar(user) {
+  const avatar = $('#profileAvatar');
+  const photo = user.avatar ? `<img src="${escapeHTML(user.avatar)}" alt="">` : `<span class="avatar-initials">${escapeHTML(initials(user.name))}</span>`;
+  avatar.innerHTML = photo;
+  avatar.dataset.effect = user.avatarEffect || 'none';
+  avatar.classList.add('avatar-shell');
+  $('#profileBadge').innerHTML = badgeMarkup(user);
+}
+
+function renderMessage(message, messages) {
+  const author = message.user || { id: '', name: 'Unknown', bio: '' };
+  const reply = message.replyTo ? messages.find((candidate) => candidate.id === message.replyTo) : null;
+  const reactions = message.reactions || {};
+  const reactionMarkup = Object.entries(reactions).filter(([, ids]) => ids.length).map(([emoji, ids]) => `<button class="reaction${ids.includes(currentUser.id) ? ' selected' : ''}" data-react="${escapeHTML(emoji)}" data-message-id="${escapeHTML(message.id)}" aria-label="React ${escapeHTML(emoji)}">${escapeHTML(emoji)} ${ids.length}</button>`).join('');
+  const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(message.createdAt));
+  return `<article class="message" data-message-id="${escapeHTML(message.id)}">
+    ${avatarMarkup(author)}
+    <div class="message-body">
+      <div class="message-meta"><span class="message-author-group">${author.role === 'system' ? '<span class="message-author">BOT</span>' : `<button class="message-author" data-user="${escapeHTML(author.id)}">${escapeHTML(author.name)}</button>`}${badgeMarkup(author)}</span><span class="message-time">${escapeHTML(time)}</span></div>
+      ${reply ? `<blockquote class="reply-quote"><strong>${escapeHTML(reply.user?.name || 'Member')}</strong> &nbsp;${escapeHTML(reply.text.slice(0, 150))}</blockquote>` : ''}
+      <p class="message-text">${highlightMentions(message.text)}</p>
+      ${message.attachment?.url ? `<img class="message-image" src="${escapeHTML(message.attachment.url)}" alt="Image shared in chat" loading="lazy">` : ''}
+      ${reactionMarkup ? `<div class="message-reactions">${reactionMarkup}</div>` : ''}
+    </div>
+    <div class="message-actions">
+      <button class="message-action" data-action="emoji" data-message-id="${escapeHTML(message.id)}" aria-label="React with emoji" title="React"><i data-lucide="smile-plus"></i></button>
+      <button class="message-action" data-action="reply" data-message-id="${escapeHTML(message.id)}" aria-label="Reply to message" title="Reply"><i data-lucide="reply"></i></button>
+      <div class="emoji-picker" data-picker="${escapeHTML(message.id)}" hidden>${emojiOptions.map((emoji) => `<button type="button" data-pick-emoji="${emoji}" data-message-id="${escapeHTML(message.id)}" aria-label="React ${emoji}">${emoji}</button>`).join('')}</div>
+    </div>
+  </article>`;
+}
+
+function renderMessages() {
+  const messages = messagesFor();
+  const filtered = messages.filter((message) => `${message.user?.name || ''} ${message.text}`.toLowerCase().includes(searchQuery.toLowerCase()));
+  const container = $('#messages');
+  container.innerHTML = `<div class="date-divider">${activeContext.type === 'room' ? 'ROOM CONVERSATION' : 'DIRECT MESSAGE'}</div>${filtered.length ? filtered.map((message) => renderMessage(message, messages)).join('') : `<p class="empty-state">${searchQuery ? 'No messages match that search.' : 'No messages yet. Start the conversation.'}</p>`}`;
+  container.scrollTop = container.scrollHeight;
+  refreshIcons();
+}
+
+function renderOnline() {
+  const onlineUsers = onlineIds.map(profileById).filter(Boolean);
+  $('#onlineCount').textContent = onlineUsers.length;
+  $('#peopleSummary').textContent = `${users.length + 1} registered ${users.length === 0 ? 'member' : 'members'}.`;
+  $('#onlineMembers').innerHTML = onlineUsers.length
+    ? onlineUsers.map((user) => `<button class="online-row profile-trigger" data-user="${escapeHTML(user.id)}">${avatarMarkup(user)}<span>${escapeHTML(user.name)}</span><i class="online-indicator"></i></button>`).join('')
+    : '<p class="room-footer">No one else is online right now.</p>';
+  document.querySelectorAll('#onlineMembers [data-user]').forEach((button) => button.addEventListener('click', () => {
+    const user = profileById(button.dataset.user);
+    if (user) openProfile(user);
+  }));
+  const onlineInRoom = onlineUsers.slice(0, 3);
+  $('#memberStack').innerHTML = `${onlineInRoom.map((user) => `<button class="profile-trigger" data-user="${escapeHTML(user.id)}" title="${escapeHTML(user.name)}">${avatarMarkup(user)}</button>`).join('')}<span class="member-count">${onlineUsers.length} online</span>`;
+  document.querySelectorAll('#memberStack [data-user]').forEach((button) => button.addEventListener('click', () => {
+    const user = profileById(button.dataset.user);
+    if (user) openProfile(user);
+  }));
+}
+
+function setReply(message) {
+  replyTarget = message;
+  const preview = $('#replyPreview');
+  preview.hidden = !message;
+  if (message) {
+    preview.innerHTML = `<span>Replying to <strong>${escapeHTML(message.user?.name || 'member')}</strong>: ${escapeHTML(message.text.slice(0, 100))}</span><button type="button" id="cancelReply" aria-label="Cancel reply"><i data-lucide="x"></i></button>`;
+    $('#cancelReply').addEventListener('click', () => setReply(null));
+  }
+  refreshIcons();
+  if (message) $('#messageInput').focus();
+}
+
+function setContextHeader() {
+  if (activeContext.type === 'room') {
+    const room = rooms.find((item) => item.id === activeContext.id);
+    $('#chatTitle').innerHTML = `<span>#</span> ${escapeHTML(room?.name || activeContext.id)}`;
+    $('#chatSubtitle').textContent = activeContext.id === 'links' ? 'Share useful links with the whole room.' : 'A room for real-time conversation.';
+    $('#messageInput').placeholder = `Message # ${room?.name || activeContext.id}`;
+  } else if (activeContext.type === 'voice') {
+    const room = rooms.find((item) => item.id === activeContext.id);
+    $('#chatTitle').textContent = room?.name || 'Voice Room';
+    $('#chatSubtitle').textContent = 'Live voice conversation';
+    $('#messageInput').placeholder = 'Voice room';
+  } else {
+    const peer = profileById(activeContext.id);
+    $('#chatTitle').textContent = peer?.name || 'Direct message';
+    $('#chatSubtitle').textContent = 'Private conversation';
+    $('#messageInput').placeholder = `Message ${peer?.name || ''}`;
+  }
+}
+
+async function openRoom(roomId) {
+  if (voiceRoomId) leaveVoiceRoom();
+  activeContext = { type: 'room', id: roomId };
+  searchQuery = '';
+  setReply(null);
+  setContextHeader();
+  $('#voicePanel').hidden = true;
+  $('#messages').hidden = false;
+  $('#composerWrap').hidden = false;
+  animateChatView();
+  renderSidebar();
+  $('#sidebar').classList.remove('open');
+  $('#messages').innerHTML = '<p class="empty-state">Loading conversation…</p>';
+  try {
+    const result = await api(`/api/messages?room=${encodeURIComponent(roomId)}`);
+    if (activeContext.type !== 'room' || activeContext.id !== roomId) return;
+    messageCache.set(contextKey(), result.messages);
+    if (socket?.connected) socket.emit('room:join', roomId, (reply) => { if (reply?.error) showToast(reply.error); });
+    renderMessages();
+  } catch (error) { showToast(error.message); }
+}
+
+async function openDirect(peer) {
+  if (voiceRoomId) leaveVoiceRoom();
+  activeContext = { type: 'dm', id: peer.id };
+  searchQuery = '';
+  setReply(null);
+  setContextHeader();
+  $('#voicePanel').hidden = true;
+  $('#messages').hidden = false;
+  $('#composerWrap').hidden = false;
+  animateChatView();
+  renderSidebar();
+  $('#sidebar').classList.remove('open');
+  $('#messages').innerHTML = '<p class="empty-state">Loading conversation…</p>';
+  try {
+    const result = await api(`/api/dms/${encodeURIComponent(peer.id)}`);
+    if (activeContext.type !== 'dm' || activeContext.id !== peer.id) return;
+    messageCache.set(contextKey(), result.messages);
+    if (socket?.connected) socket.emit('dm:join', peer.id, (reply) => { if (reply?.error) showToast(reply.error); });
+    renderMessages();
+  } catch (error) { showToast(error.message); }
+}
+
+function renderVoiceMembers() {
+  const self = currentUser ? [{ id: 'self', user: currentUser }] : [];
+  const peers = [...voiceUsers.entries()].map(([socketId, user]) => ({ id: socketId, user }));
+  $('#voiceMembers').innerHTML = [...self, ...peers].map(({ id, user }) => `<span class="voice-member">${avatarMarkup(user)}<span>${escapeHTML(user.name)}${id === 'self' ? ' (you)' : ''}</span></span>`).join('') || '<span>No one is in the call yet.</span>';
+  $('#voiceStatus').textContent = voiceRoomId ? 'You are connected. Keep this tab open to stay in the call.' : peers.length ? `${peers.length} ${peers.length === 1 ? 'person is' : 'people are'} in this call.` : 'Start a call or join the room.';
+  $('#callVoiceButton').hidden = Boolean(voiceRoomId);
+  $('#joinVoiceButton').hidden = Boolean(voiceRoomId) || peers.length === 0;
+  $('#leaveVoiceButton').hidden = !voiceRoomId;
+  $('#muteMicButton').hidden = !voiceRoomId;
+  $('#callVoiceButton').hidden = Boolean(voiceRoomId) || peers.length > 0;
+  $('#joinVoiceButton').hidden = Boolean(voiceRoomId) || peers.length === 0;
+}
+
+function sendVoiceSignal(peerSocketId, signal) {
+  if (!socket?.connected || !voiceRoomId) return;
+  socket.emit('voice:signal', { to: peerSocketId, signal });
+}
+
+function createVoicePeer(peerSocketId, initiator) {
+  if (voiceConnections.has(peerSocketId)) return voiceConnections.get(peerSocketId);
+  const connection = new RTCPeerConnection({ iceServers: voiceIceServers });
+  voiceConnections.set(peerSocketId, connection);
+  for (const track of localVoiceStream?.getTracks() || []) connection.addTrack(track, localVoiceStream);
+  connection.onicecandidate = (event) => { if (event.candidate) sendVoiceSignal(peerSocketId, { candidate: event.candidate }); };
+  connection.ontrack = (event) => {
+    let audio = document.querySelector(`[data-voice-audio="${CSS.escape(peerSocketId)}"]`);
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.autoplay = true;
+      audio.dataset.voiceAudio = peerSocketId;
+      $('#remoteAudios').append(audio);
+    }
+    audio.srcObject = event.streams[0];
+  };
+  connection.onconnectionstatechange = () => {
+    if (['failed', 'closed'].includes(connection.connectionState)) {
+      connection.close();
+      voiceConnections.delete(peerSocketId);
+    }
+  };
+  if (initiator) connection.createOffer().then((offer) => connection.setLocalDescription(offer)).then(() => sendVoiceSignal(peerSocketId, { description: connection.localDescription })).catch(() => showToast('Could not start a voice connection.'));
+  return connection;
+}
+
+async function joinVoiceRoom(roomId) {
+  if (voiceRoomId) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
+    showToast('Voice calls need a supported browser and microphone access.');
+    return;
+  }
+  try {
+    const voiceConfig = await api('/api/voice-config');
+    voiceIceServers = voiceConfig.iceServers;
+    localVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    socket.emit('voice:join', roomId, (result) => {
+      if (result?.error) {
+        localVoiceStream.getTracks().forEach((track) => track.stop());
+        localVoiceStream = null;
+        showToast(result.error);
+        return;
+      }
+      voiceRoomId = roomId;
+      voiceUsers.clear();
+      for (const participant of result.participants) {
+        voiceUsers.set(participant.socketId, participant.user);
+        createVoicePeer(participant.socketId, false);
+      }
+      renderVoiceMembers();
+    });
+  } catch (error) {
+    localVoiceStream?.getTracks().forEach((track) => track.stop());
+    localVoiceStream = null;
+    showToast(error.name === 'NotAllowedError' ? 'Allow microphone access to join the call.' : 'Could not join the voice call.');
+  }
+}
+
+function leaveVoiceRoom() {
+  if (voiceRoomId && socket?.connected) socket.emit('voice:leave');
+  for (const connection of voiceConnections.values()) connection.close();
+  voiceConnections.clear();
+  localVoiceStream?.getTracks().forEach((track) => track.stop());
+  localVoiceStream = null;
+  voiceUsers.clear();
+  voiceRoomId = null;
+  $('#remoteAudios').replaceChildren();
+  renderVoiceMembers();
+}
+
+function openVoiceRoom(roomId) {
+  activeContext = { type: 'voice', id: roomId };
+  setContextHeader();
+  animateChatView();
+  renderSidebar();
+  $('#sidebar').classList.remove('open');
+  $('#voicePanel').hidden = false;
+  $('#messages').hidden = true;
+  $('#composerWrap').hidden = true;
+  voiceUsers.clear();
+  if (socket?.connected) socket.emit('voice:peek', roomId, (result) => {
+    if (result?.error) { showToast(result.error); return; }
+    voiceUsers = new Map(result.participants.map((participant) => [participant.socketId, participant.user]));
+    renderVoiceMembers();
+  });
+  renderVoiceMembers();
+}
+
+function openProfile(user) {
+  profileUser = user;
+  $('#modalAvatar').innerHTML = avatarMarkup(user, 'profile-avatar-image');
+  $('#modalName').textContent = user.name;
+  $('#modalBadge').innerHTML = badgeMarkup(user);
+  $('#modalBio').textContent = user.bio || 'This person hasn’t added a bio yet.';
+  $('#modalError').textContent = '';
+  $('#bioEditor').hidden = true;
+  $('#modalBio').hidden = false;
+  $('#profileView').hidden = false;
+  $('#customizerView').hidden = true;
+  $('#messageUserButton').hidden = user.id === currentUser.id;
+  $('#editBioButton').hidden = user.id !== currentUser.id;
+  $('#customizeAvatarButton').hidden = user.id !== currentUser.id;
+  $('#promoteUserButton').hidden = currentUser.role !== 'owner' || user.id === currentUser.id || user.role === 'owner';
+  $('#promoteUserButton').textContent = user.role === 'moderator' ? 'Remove Mod' : 'Make Mod';
+  $('#muteUserButton').hidden = !['owner', 'moderator'].includes(currentUser.role) || user.id === currentUser.id || user.role === 'owner' || (currentUser.role === 'moderator' && user.role === 'moderator');
+  $('#saveBioButton').hidden = true;
+  if (!$('#profileDialog').open) $('#profileDialog').showModal();
+  refreshIcons();
+}
+
+function renderStudioPreview() {
+  const previewUser = {
+    ...currentUser,
+    avatar: avatarPreviewUrl || currentUser.avatar,
+    avatarEffect: selectedAvatarEffect,
+    badge: selectedBadge
+  };
+  $('#avatarPreview').innerHTML = avatarMarkup(previewUser, 'studio-avatar');
+  document.querySelectorAll('[data-effect-choice]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.effectChoice === selectedAvatarEffect);
+  });
+  document.querySelectorAll('[data-badge-choice]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.badgeChoice === selectedBadge);
+  });
+}
+
+function openAvatarStudio() {
+  selectedAvatarEffect = currentUser.avatarEffect || 'none';
+  selectedBadge = currentUser.badge || 'none';
+  selectedAvatarFile = null;
+  if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl);
+  avatarPreviewUrl = null;
+  $('#customizerError').textContent = '';
+  $('#profileView').hidden = true;
+  $('#customizerView').hidden = false;
+  $('#effectOptions').innerHTML = Object.entries(effectLabels).map(([effect, label]) => `<button class="effect-option${effect === selectedAvatarEffect ? ' active' : ''}" type="button" data-effect-choice="${effect}"><span class="effect-swatch ${effect}"></span>${label}</button>`).join('');
+  $('#badgeOptions').innerHTML = Object.entries(badgeLabels).map(([badge, label]) => `<button class="badge-option${badge === selectedBadge ? ' active' : ''}" type="button" data-badge-choice="${badge}">${badge === 'none' ? label : `<span class="profile-badge badge-${badge}">${label}</span>`}</button>`).join('');
+  document.querySelectorAll('[data-effect-choice]').forEach((button) => button.addEventListener('click', () => {
+    selectedAvatarEffect = button.dataset.effectChoice;
+    renderStudioPreview();
+  }));
+  document.querySelectorAll('[data-badge-choice]').forEach((button) => button.addEventListener('click', () => {
+    selectedBadge = button.dataset.badgeChoice;
+    renderStudioPreview();
+  }));
+  renderStudioPreview();
+  refreshIcons();
+}
+
+function animateChatView() {
+  const view = $('.chat-main');
+  view.classList.remove('view-enter');
+  void view.offsetWidth;
+  view.classList.add('view-enter');
+}
+
+function closeProfileDialog() {
+  const dialog = $('#profileDialog');
+  if (!dialog.open) return;
+  const animation = dialog.animate([{ opacity: 1, transform: 'translateY(0) scale(1)' }, { opacity: 0, transform: 'translateY(6px) scale(.99)' }], { duration: 150, easing: 'ease-in', fill: 'forwards' });
+  animation.onfinish = () => {
+    dialog.close();
+    animation.cancel();
+  };
+}
+
+function openSocket() {
+  socket = io();
+  socket.on('connect', () => {
+    if (activeContext.type === 'room') socket.emit('room:join', activeContext.id);
+    else socket.emit('dm:join', activeContext.id);
+  });
+  socket.on('connect_error', () => showToast('Live connection failed. Please sign in again.'));
+  socket.on('room:message', (message) => {
+    const key = `room:${message.roomId}`;
+    const list = messageCache.get(key) || [];
+    if (!list.some((item) => item.id === message.id)) list.push(message);
+    messageCache.set(key, list);
+    if (activeContext.type === 'room' && activeContext.id === message.roomId) renderMessages();
+  });
+  socket.on('dm:message', (message) => {
+    const peerId = message.user.id === currentUser.id ? message.recipientId : message.user.id;
+    const key = `dm:${peerId}`;
+    const list = messageCache.get(key) || [];
+    if (!list.some((item) => item.id === message.id)) list.push(message);
+    messageCache.set(key, list);
+    if (activeContext.type === 'dm' && activeContext.id === peerId) renderMessages();
+  });
+  socket.on('dm:notification', ({ user, message }) => {
+    const peerId = user.id;
+    const key = `dm:${peerId}`;
+    const list = messageCache.get(key) || [];
+    if (!list.some((item) => item.id === message.id)) list.push(message);
+    messageCache.set(key, list);
+    if (!(activeContext.type === 'dm' && activeContext.id === peerId)) showToast(`New message from ${user.name}`);
+  });
+  socket.on('mention:notification', ({ roomId, roomName, sender }) => {
+    mentionedRoomId = roomId;
+    $('#mentionNoticeText').textContent = `${sender.name} mentioned you in #${roomName}`;
+    $('#mentionNotice').hidden = false;
+  });
+  socket.on('message:reaction', ({ messageId, reactions }) => {
+    for (const list of messageCache.values()) {
+      const message = list.find((item) => item.id === messageId);
+      if (message) message.reactions = reactions;
+    }
+    renderMessages();
+  });
+  socket.on('presence:update', (ids) => {
+    onlineIds = ids;
+    renderPeople();
+    renderOnline();
+  });
+  socket.on('profile:update', (user) => {
+    if (user.id === currentUser.id) currentUser = user;
+    users = users.map((entry) => entry.id === user.id ? user : entry);
+    for (const list of messageCache.values()) {
+      for (const message of list) if (message.user?.id === user.id) message.user = user;
+    }
+    if (profileUser?.id === user.id) {
+      profileUser = user;
+      $('#modalAvatar').innerHTML = avatarMarkup(user, 'profile-avatar-image');
+      $('#modalName').textContent = user.name;
+      $('#modalBadge').innerHTML = badgeMarkup(user);
+      $('#modalBio').textContent = user.bio || 'This person hasn’t added a bio yet.';
+      if (!$('#customizerView').hidden) renderStudioPreview();
+    }
+    if (user.id === currentUser.id) renderOwnAvatar(user);
+    renderSidebar();
+    renderMessages();
+  });
+  socket.on('moderation:mute', ({ mutedUntil, reason }) => showMuteScreen(mutedUntil, reason));
+  socket.on('voice:ring', ({ roomId, roomName, participants = [] }) => {
+    voiceRingRoomId = roomId;
+    voiceUsers = new Map(participants.map((participant) => [participant.socketId, participant.user]));
+    $('#voiceNoticeText').textContent = `A call started in ${roomName}.`;
+    $('#voiceNotice').hidden = false;
+  });
+  socket.on('voice:participant-joined', ({ socketId, user }) => {
+    voiceUsers.set(socketId, user);
+    if (voiceRoomId) createVoicePeer(socketId, true);
+    renderVoiceMembers();
+  });
+  socket.on('voice:participant-left', (socketId) => {
+    voiceConnections.get(socketId)?.close();
+    voiceConnections.delete(socketId);
+    voiceUsers.delete(socketId);
+    document.querySelector(`[data-voice-audio="${CSS.escape(socketId)}"]`)?.remove();
+    renderVoiceMembers();
+  });
+  socket.on('voice:signal', async ({ from, signal }) => {
+    const connection = createVoicePeer(from, false);
+    try {
+      if (signal.description) {
+        await connection.setRemoteDescription(signal.description);
+        if (signal.description.type === 'offer') {
+          const answer = await connection.createAnswer();
+          await connection.setLocalDescription(answer);
+          sendVoiceSignal(from, { description: connection.localDescription });
+        }
+      } else if (signal.candidate) await connection.addIceCandidate(signal.candidate);
+    } catch { showToast('Could not establish the voice connection.'); }
+  });
+  socket.on('room:created', (room) => {
+    if (!rooms.some((entry) => entry.id === room.id)) rooms.push(room);
+    renderSidebar();
+  });
+}
+
+async function enterChat(user, muteExpired = false) {
+  currentUser = user;
+  $('#profileName').textContent = user.name;
+  renderOwnAvatar(user);
+  $('#authShell').hidden = true;
+  $('#appShell').hidden = false;
+  messageCache = new Map();
+  try {
+    const [roomResult, userResult] = await Promise.all([api('/api/rooms'), api('/api/users')]);
+    rooms = roomResult.rooms;
+    users = userResult.users;
+    onlineIds = userResult.online;
+    renderSidebar();
+    renderOnline();
+    openSocket();
+    await openRoom(rooms[0]?.id || 'general');
+    if (user.mutedUntil && Date.parse(user.mutedUntil) > Date.now()) showMuteScreen(user.mutedUntil, user.muteReason);
+    else if (muteExpired) showToast('Your mute has ended. This is your warning.');
+  } catch (error) {
+    showToast(error.message);
+    await leaveChat(false);
+  }
+}
+
+async function leaveChat(callServer = true) {
+  if (socket) socket.disconnect();
+  socket = null;
+  if (callServer) await api('/api/logout', { method: 'POST' }).catch(() => {});
+  currentUser = null;
+  rooms = [];
+  users = [];
+  onlineIds = [];
+  messageCache.clear();
+  clearInterval(muteTimerInterval);
+  $('#muteScreen').hidden = true;
+  showAuth('welcome');
+}
+
+function showMuteScreen(mutedUntil, reason = '') {
+  if (voiceRoomId) leaveVoiceRoom();
+  $('#appShell').hidden = true;
+  $('#authShell').hidden = true;
+  $('#muteScreen').hidden = false;
+  $('#muteReason').textContent = reason ? `Reason: ${reason}` : 'A moderator paused your messages.';
+  clearInterval(muteTimerInterval);
+  const updateTimer = async () => {
+    const remaining = Math.max(0, Date.parse(mutedUntil) - Date.now());
+    const seconds = Math.ceil(remaining / 1000);
+    $('#muteCountdown').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+    if (remaining > 0) return;
+    clearInterval(muteTimerInterval);
+    const result = await api('/api/me').catch(() => null);
+    currentUser = result?.user || currentUser;
+    $('#muteScreen').hidden = true;
+    $('#appShell').hidden = false;
+    showToast('Your mute has ended. This is your warning.');
+  };
+  updateTimer();
+  muteTimerInterval = setInterval(updateTimer, 1000);
+}
+
+$('#startSignup').addEventListener('click', () => {
+  setAuthMode(false);
+  showAuth('create');
+});
+$('#welcomeLogin').addEventListener('click', () => {
+  setAuthMode(true);
+  showAuth('create');
+});
+$('#backWelcome').addEventListener('click', () => showAuth('welcome'));
+$('#accountForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const body = { password: $('#passwordInput').value };
+  if (!loginMode) {
+    body.email = $('#emailInput').value.trim();
+    body.name = $('#nameInput').value.trim();
+    body.bio = $('#bioInput').value.trim();
+  } else body.identity = $('#emailInput').value.trim();
+  try {
+    $('#submitAccount').disabled = true;
+    const result = await api(loginMode ? '/api/login' : '/api/signup', { method: 'POST', body: JSON.stringify(body) });
+    await enterChat(result.user, result.muteExpired);
+  } catch (error) {
+    $('#formError').textContent = error.message;
+  } finally {
+    $('#submitAccount').disabled = false;
+  }
+});
+
+$('#messageForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const input = $('#messageInput');
+  const text = input.value.trim();
+  if ((!text && !selectedChatImage) || !socket?.connected) {
+    if (text || selectedChatImage) showToast('Reconnecting. Your message has not been sent.');
+    return;
+  }
+  if (activeContext.type === 'voice') return;
+  if (activeContext.type === 'room' && activeContext.id !== 'links' && linkifyText(text) !== escapeHTML(text)) {
+    showToast('Please send links in #links.');
+    return;
+  }
+  $('#mentionSuggestions').hidden = true;
+  let attachmentId = null;
+  if (selectedChatImage) {
+    try {
+      const attachment = await api('/api/attachments', { method: 'POST', headers: { 'Content-Type': selectedChatImage.type }, body: selectedChatImage });
+      attachmentId = attachment.id;
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+  }
+  const payload = { text, attachmentId, replyTo: replyTarget?.id || null };
+  const eventName = activeContext.type === 'room' ? 'room:send' : 'dm:send';
+  if (activeContext.type === 'room') payload.roomId = activeContext.id;
+  else payload.peerId = activeContext.id;
+  socket.emit(eventName, payload, (result) => {
+    if (result?.error) { showToast(result.error); return; }
+    input.value = '';
+    selectedChatImage = null;
+    $('#imageInput').value = '';
+    setReply(null);
+  });
+});
+
+$('#messageInput').addEventListener('input', updateMentionSuggestions);
+$('#messageInput').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') $('#mentionSuggestions').hidden = true;
+});
+$('#mentionSuggestions').addEventListener('click', (event) => {
+  const option = event.target.closest('[data-mention-user]');
+  const user = option && users.find((entry) => entry.id === option.dataset.mentionUser);
+  if (!user || mentionQueryStart === null) return;
+  const input = $('#messageInput');
+  const cursor = input.selectionStart;
+  input.value = `${input.value.slice(0, mentionQueryStart)}@${user.name} ${input.value.slice(cursor)}`;
+  const nextCursor = mentionQueryStart + user.name.length + 2;
+  input.setSelectionRange(nextCursor, nextCursor);
+  $('#mentionSuggestions').hidden = true;
+  input.focus();
+});
+
+$('#messages').addEventListener('click', (event) => {
+  const externalLink = event.target.closest('[data-external-url]');
+  if (externalLink) {
+    event.preventDefault();
+    const destination = new URL(externalLink.dataset.externalUrl);
+    if (!['http:', 'https:'].includes(destination.protocol)) return;
+    pendingExternalUrl = destination.href;
+    $('#externalLinkAddress').textContent = destination.href;
+    $('#externalLinkAddress').href = destination.href;
+    $('#linkWarningDialog').showModal();
+    return;
+  }
+  const profileButton = event.target.closest('[data-user]');
+  if (profileButton) {
+    const user = profileById(profileButton.dataset.user);
+    if (user) openProfile(user);
+    return;
+  }
+  const reaction = event.target.closest('[data-react]');
+  if (reaction) {
+    socket?.emit('message:react', { messageId: reaction.dataset.messageId, emoji: reaction.dataset.react }, (result) => { if (result?.error) showToast(result.error); });
+    return;
+  }
+  const action = event.target.closest('[data-action]');
+  if (!action) return;
+  const message = messagesFor().find((item) => item.id === action.dataset.messageId);
+  if (!message) return;
+  if (action.dataset.action === 'reply') setReply(message);
+  if (action.dataset.action === 'emoji') {
+    document.querySelectorAll('.emoji-picker').forEach((picker) => { if (picker.dataset.picker !== message.id) picker.hidden = true; });
+    const picker = document.querySelector(`[data-picker="${CSS.escape(message.id)}"]`);
+    picker.hidden = !picker.hidden;
+  }
+  const emojiButton = event.target.closest('[data-pick-emoji]');
+  if (emojiButton) {
+    socket?.emit('message:react', { messageId: emojiButton.dataset.messageId, emoji: emojiButton.dataset.pickEmoji }, (result) => { if (result?.error) showToast(result.error); });
+  }
+});
+
+$('#messages').addEventListener('click', (event) => {
+  const emojiButton = event.target.closest('[data-pick-emoji]');
+  if (!emojiButton) return;
+  socket?.emit('message:react', { messageId: emojiButton.dataset.messageId, emoji: emojiButton.dataset.pickEmoji }, (result) => { if (result?.error) showToast(result.error); });
+});
+
+$('#newRoomButton').addEventListener('click', async () => {
+  const name = prompt('Name the room');
+  if (!name?.trim()) return;
+  try {
+    const result = await api('/api/rooms', { method: 'POST', body: JSON.stringify({ name }) });
+    if (!rooms.some((room) => room.id === result.room.id)) rooms.push(result.room);
+    renderSidebar();
+    await openRoom(result.room.id);
+  } catch (error) { showToast(error.message); }
+});
+$('#searchButton').addEventListener('click', () => {
+  const query = prompt('Search this conversation', searchQuery);
+  if (query === null) return;
+  searchQuery = query.trim();
+  renderMessages();
+});
+$('#emojiButton').addEventListener('click', () => { $('#messageInput').value += '✨'; $('#messageInput').focus(); });
+$('#imageButton').addEventListener('click', () => $('#imageInput').click());
+$('#imageInput').addEventListener('change', () => {
+  const file = $('#imageInput').files?.[0];
+  if (!file) return;
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+    showToast('Choose a JPG, PNG, or WebP image up to 5 MB.');
+    $('#imageInput').value = '';
+    return;
+  }
+  selectedChatImage = file;
+  showToast(`Selected ${file.name}. It will be scanned before posting.`);
+});
+$('#menuButton').addEventListener('click', () => $('#sidebar').classList.add('open'));
+$('#closeSidebar').addEventListener('click', () => $('#sidebar').classList.remove('open'));
+$('#signOutButton').addEventListener('click', () => leaveChat());
+$('#ownProfileButton').addEventListener('click', () => openProfile(currentUser));
+$('#closeProfile').addEventListener('click', closeProfileDialog);
+$('#messageUserButton').addEventListener('click', () => {
+  if (!profileUser || profileUser.id === currentUser.id) return;
+  const peer = profileUser;
+  closeProfileDialog();
+  openDirect(peer);
+});
+$('#promoteUserButton').addEventListener('click', async () => {
+  if (!profileUser) return;
+  const role = profileUser.role === 'moderator' ? 'member' : 'moderator';
+  try {
+    const result = await api(`/api/users/${encodeURIComponent(profileUser.id)}/role`, { method: 'POST', body: JSON.stringify({ role }) });
+    profileUser = result.user;
+    users = users.map((user) => user.id === result.user.id ? result.user : user);
+    for (const list of messageCache.values()) for (const message of list) if (message.user?.id === result.user.id) message.user = result.user;
+    openProfile(profileUser);
+    renderSidebar();
+    renderMessages();
+  } catch (error) { $('#modalError').textContent = error.message; }
+});
+$('#muteUserButton').addEventListener('click', async () => {
+  if (!profileUser) return;
+  const durationMinutes = Number(prompt('Mute duration in minutes (1-1440)', '10'));
+  if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 1440) return;
+  const reason = prompt('Reason for the mute');
+  if (!reason?.trim()) return;
+  try {
+    const result = await api('/api/moderation/mute', {
+      method: 'POST',
+      body: JSON.stringify({ userId: profileUser.id, durationMinutes, reason, roomId: activeContext.type === 'room' ? activeContext.id : 'general' })
+    });
+    $('#profileDialog').close();
+    showToast(`Mute applied. BOT posted in #${result.roomId}.`);
+  } catch (error) { $('#modalError').textContent = error.message; }
+});
+$('#callVoiceButton').addEventListener('click', () => joinVoiceRoom(activeContext.id));
+$('#joinVoiceButton').addEventListener('click', () => joinVoiceRoom(activeContext.id));
+$('#leaveVoiceButton').addEventListener('click', leaveVoiceRoom);
+$('#muteMicButton').addEventListener('click', () => {
+  const tracks = localVoiceStream?.getAudioTracks() || [];
+  const shouldEnable = tracks.some((track) => !track.enabled);
+  tracks.forEach((track) => { track.enabled = shouldEnable; });
+  $('#muteMicButton').textContent = shouldEnable ? 'Mute mic' : 'Unmute mic';
+});
+$('#voiceNoticeJoin').addEventListener('click', () => {
+  if (!voiceRingRoomId) return;
+  const roomId = voiceRingRoomId;
+  $('#voiceNotice').hidden = true;
+  openVoiceRoom(roomId);
+  joinVoiceRoom(roomId);
+});
+$('#voiceNoticeIgnore').addEventListener('click', () => {
+  $('#voiceNotice').hidden = true;
+  voiceRingRoomId = null;
+});
+$('#mentionNoticeOpen').addEventListener('click', () => {
+  if (!mentionedRoomId) return;
+  const roomId = mentionedRoomId;
+  mentionedRoomId = null;
+  $('#mentionNotice').hidden = true;
+  openRoom(roomId);
+});
+$('#mentionNoticeDismiss').addEventListener('click', () => {
+  mentionedRoomId = null;
+  $('#mentionNotice').hidden = true;
+});
+$('#customizeAvatarButton').addEventListener('click', openAvatarStudio);
+$('#backToProfile').addEventListener('click', () => {
+  $('#customizerView').hidden = true;
+  $('#profileView').hidden = false;
+  if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl);
+  avatarPreviewUrl = null;
+  selectedAvatarFile = null;
+});
+$('#chooseAvatarButton').addEventListener('click', () => $('#avatarFile').click());
+$('#avatarFile').addEventListener('change', () => {
+  const file = $('#avatarFile').files?.[0];
+  if (!file) return;
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+    $('#customizerError').textContent = 'Choose a JPG, PNG, or WebP image up to 5 MB.';
+    $('#avatarFile').value = '';
+    return;
+  }
+  if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl);
+  selectedAvatarFile = file;
+  avatarPreviewUrl = URL.createObjectURL(file);
+  $('#customizerError').textContent = '';
+  renderStudioPreview();
+});
+$('#saveAvatarButton').addEventListener('click', async () => {
+  const button = $('#saveAvatarButton');
+  button.disabled = true;
+  $('#customizerError').textContent = '';
+  try {
+    if (selectedAvatarFile) {
+      const upload = await api('/api/avatar', {
+        method: 'POST',
+        headers: { 'Content-Type': selectedAvatarFile.type },
+        body: selectedAvatarFile
+      });
+      currentUser = upload.user;
+    }
+    const result = await api('/api/profile', {
+      method: 'PATCH',
+      body: JSON.stringify({ avatarEffect: selectedAvatarEffect, badge: selectedBadge })
+    });
+    currentUser = result.user;
+    users = users.map((user) => user.id === currentUser.id ? currentUser : user);
+    for (const list of messageCache.values()) {
+      for (const message of list) if (message.user?.id === currentUser.id) message.user = currentUser;
+    }
+    if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl);
+    avatarPreviewUrl = null;
+    selectedAvatarFile = null;
+    renderOwnAvatar(currentUser);
+    renderSidebar();
+    renderOnline();
+    renderMessages();
+    openProfile(currentUser);
+    showToast('Your look is saved.');
+  } catch (error) {
+    $('#customizerError').textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+$('#editBioButton').addEventListener('click', () => {
+  $('#bioEditor').value = currentUser.bio || '';
+  $('#bioEditor').hidden = false;
+  $('#modalBio').hidden = true;
+  $('#editBioButton').hidden = true;
+  $('#customizeAvatarButton').hidden = true;
+  $('#messageUserButton').hidden = true;
+  $('#saveBioButton').hidden = false;
+});
+$('#saveBioButton').addEventListener('click', async () => {
+  try {
+    const result = await api('/api/profile', { method: 'PATCH', body: JSON.stringify({ bio: $('#bioEditor').value }) });
+    currentUser = result.user;
+    renderOwnAvatar(currentUser);
+    openProfile(currentUser);
+  } catch (error) { $('#modalError').textContent = error.message; }
+});
+$('#profileDialog').addEventListener('click', (event) => {
+  if (event.target === $('#profileDialog')) closeProfileDialog();
+});
+
+$('#goBackButton').addEventListener('click', () => {
+  pendingExternalUrl = null;
+  $('#linkWarningDialog').close();
+});
+$('#goToSiteButton').addEventListener('click', () => {
+  if (pendingExternalUrl) window.open(pendingExternalUrl, '_blank', 'noopener,noreferrer');
+  pendingExternalUrl = null;
+  $('#linkWarningDialog').close();
+});
+$('#linkWarningDialog').addEventListener('click', (event) => {
+  if (event.target === $('#linkWarningDialog')) {
+    pendingExternalUrl = null;
+    $('#linkWarningDialog').close();
+  }
+});
+
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button || button.disabled || typeof button.animate !== 'function') return;
+  button.animate([{ opacity: 0.72, transform: 'scale(.97)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 180, easing: 'ease-out' });
+});
+
+(async function boot() {
+  try {
+    const result = await api('/api/me');
+    if (result.user) await enterChat(result.user, result.muteExpired);
+    else showAuth('welcome');
+  } catch { showAuth('welcome'); }
+  refreshIcons();
+})();
